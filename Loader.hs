@@ -72,52 +72,15 @@ A couple of tips.
    segment below the data segment in memory.  If you do the same, you may find
    it easier to compare your results against the provided machine images.
 
-   data Machine =
-    M { mem :: Array Int64 SByte
-      , regs :: Array Register Int64
-      , flags :: (Bool, Bool, Bool)
-      , rip :: Int64 }
-  deriving (Read, Show)
-
-  setRIP :: Int64 -> Machine -> Machine
-  setRIP val m = m{ rip = val }
-
-  data Data = String [Char] | Word Immediate
-  deriving (Eq, Show)
-
-  data Asm = Text [SourceInstr] | Data [Data]
-  deriving (Eq, Show)
-
-  type Prog = [(String, Bool, Asm)]
-
-  data Executable = E { start, textAddr, dataAddr :: Int64
-                    , textSegment, dataSegment :: [SByte] }
-
-  type Instruction imm = (Operation, [Operand imm])
-
-
-
-  type SourceInstr = Instruction Immediate
-
-  type MachineInstr = Instruction Int64
-
-  data SByte = Inst MachineInstr | More | Byte Word8
-  deriving (Read, Show)
-
-  data Immediate =
-      Literal Int64
-    | Label String
-    deriving (Eq, Show)
-
 -}
 
 
 assemble :: Prog -> Executable
-assemble prog =  E { start = memoryFloor--setRIP program
+assemble prog =  E { start = fromJust (lookup "main" textLabels)
                   , textAddr = memoryFloor
                   , dataAddr = textEnd
                   , textSegment = instToSbyte (sourceInst2MachineInst (textLabels ++ dataLabels) textBlocks)
-                  , dataSegment = dataToSbyte dataBlocks
+                  , dataSegment = dataToSbyte (textLabels ++ dataLabels) (concat (map snd dataBlocks))
                   }
                  where textBlocks = (filterSI prog)
                        dataBlocks = (filterData prog)
@@ -128,14 +91,13 @@ assemble prog =  E { start = memoryFloor--setRIP program
 filterSI :: [(String, Bool, Asm)] -> [(String,[SourceInstr])]
 filterSI [] = []
 filterSI ((s, _, (Text t)):insts) = [(s,t)] ++ filterSI insts
+filterSI ((s, _, (Data d)):insts) = filterSI insts
+
 
 filterData::  [(String, Bool, Asm)] -> [(String, [Data])]
 filterData [] = []
 filterData ((s, _, (Data d)):insts) = [(s,d)] ++ filterData insts
-
-filterData::  [(String, Bool, Asm)] -> [[Data]]
-filterData [] = []
-filterData ((_, _, (Data d)):insts) = [d] ++ filterData insts
+filterData ((s, _, (Text t)):insts) = filterData insts
 
 sourceInst2MachineInst :: [(String,Int64)] -> [(String,[SourceInstr])] -> [MachineInstr]
 sourceInst2MachineInst table insts = map patchInst $ concat (map snd insts)
@@ -161,11 +123,11 @@ instToSbyte :: [MachineInstr] -> [SByte]
 instToSbyte [] = []
 instToSbyte (inst:insts) = [Inst (inst)] ++ [More] ++ [More] ++ [More] ++  instToSbyte insts
 
-dataToSbyte :: [Data] -> [SByte]
-dataToSbyte [] = []
-dataToSbyte ((String s):ss) = map (\s-> Byte (fromIntegral (ord s))) s ++ take (fromIntegral (dataLength (String s)) - length s) (repeat (Byte 0)) ++ dataToSbyte ss
-dataToSbyte ((Word(Literal b)):bs) = (map Byte (fromQuad b)) ++ dataToSbyte bs
-dataToSbyte (Word(Label l):ls) =  map (\l-> Byte (fromIntegral (ord l))) l ++ dataToSbyte ls
+dataToSbyte :: [(String, Int64)] -> [Data] -> [SByte]
+dataToSbyte table [] = []
+dataToSbyte table ((String s):ss) = map (\s-> Byte (fromIntegral (ord s))) s ++ take (fromIntegral (dataLength (String s)) - length s) (repeat (Byte 0)) ++ dataToSbyte table ss
+dataToSbyte table ((Word(Literal b)):bs) = (map Byte (fromQuad b)) ++ dataToSbyte table bs
+dataToSbyte table (Word(Label l):ls) = (map Byte (fromQuad (fromJust (lookup l table))))  ++ dataToSbyte table ls
 
 
 dataLength :: Data -> Int64
@@ -202,4 +164,19 @@ A few tips:
 -}
 
 load :: Executable -> Machine
-load = error "unimplemented"
+load E {  start = start,
+          textAddr = textAddr,
+          dataAddr = dataAddr,
+          textSegment = textSegment,
+          dataSegment = dataSegment} = M { mem = listArray (memoryFloor, memoryCeiling) (pad n0 ++ fs ++ pad n1 ++ ss ++ pad (n2+1) ) --array
+                                           , regs = listArray (RAX, R15) (repeat 0)
+                                           , flags = (False, False, False)
+                                           , rip = start }
+                                           where n0 = lowerAddr - memoryFloor
+                                                 fs = if textAddr < dataAddr then textSegment else dataSegment
+                                                 n1 = (fromIntegral (upperAddress - lowerAddr)) - (fromIntegral (length fs))
+                                                 ss = if textAddr < dataAddr then dataSegment else textSegment
+                                                 n2 = (fromIntegral(memoryCeiling - upperAddress)) - (fromIntegral (length ss))
+                                                 lowerAddr = min textAddr dataAddr
+                                                 upperAddress = max textAddr dataAddr
+                                                 pad n = take (fromIntegral n) (repeat (Byte 0))
