@@ -1,3 +1,10 @@
+{-
+author: Luke Dercher
+class: EECS 665
+student_id: l446d901
+-}
+
+
 module Loader where
 
 import Data.Array.IArray
